@@ -1,0 +1,35 @@
+# --- Core DL stack ---
+torch>=2.2           # Install the CUDA build from pytorch.org for best GPU performance
+torchvision>=0.17
+torchaudio>=2.2
+
+# --- Hugging Face ecosystem ---
+transformers>=4.42.0
+datasets>=2.19.0
+tokenizers>=0.15.2
+huggingface_hub>=0.23.0
+safetensors>=0.4.2
+protobuf
+
+# --- Efficient fine-tuning / inference for small LLMs ---
+accelerate>=0.31.0
+peft>=0.11.1
+bitsandbytes>=0.43.0
+sentencepiece>=0.1.99   # needed for Llama-style tokenizers
+kernels
+triton
+
+# --- Metrics & eval ---
+evaluate>=0.4.2
+scikit-learn>=1.3.0
+seqeval>=1.2.2
+
+# --- Data & utilities ---
+numpy>=1.24.0
+pandas>=2.1.0
+tqdm>=4.66.0
+
+# --- Plotting / notebooks ---
+matplotlib>=3.7.0
+jupyterlab>=4.0.0
+ipykernel>=6.29.0
