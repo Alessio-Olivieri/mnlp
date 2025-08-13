@@ -10,6 +10,7 @@ tokenizers>=0.15.2
 huggingface_hub>=0.23.0
 safetensors>=0.4.2
 protobuf
+flash-attn
 
 # --- Efficient fine-tuning / inference for small LLMs ---
 accelerate>=0.31.0
@@ -18,6 +19,7 @@ bitsandbytes>=0.43.0
 sentencepiece>=0.1.99   # needed for Llama-style tokenizers
 kernels
 triton
+trl
 
 # --- Metrics & eval ---
 evaluate>=0.4.2
