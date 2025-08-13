@@ -53,8 +53,8 @@ SYSTEM_PROMPT = (
 )
 
 def _one_shot_messages(text: str) -> List[Dict[str, str]]:
-    demo_in = "Va bene? Sì, grazie."
-    demo_out = f"{SPECIAL_MARKER}Va bene? {SPECIAL_MARKER}Sì, grazie."
+    demo_in = "Andando , guardava innanzi , ansioso insieme e timoroso di veder qualcheduno; e , dopo pochi passi , vide infatti un uomo in camicia , seduto in terra , con le spalle appoggiate a una siepe di gelsomini , in un' attitudine d' insensato: e , a questa , e poi anche alla fisonomia , gli parve di raffigurar quel povero mezzo scemo di Gervaso ch' era venuto per secondo testimonio alla sciagurata spedizione. Ma essendosegli avvicinato , dovette accertarsi ch' era in vece quel Tonio così sveglio che ce l' aveva condotto. La peste , togliendogli il vigore del corpo insieme e della mente , gli aveva svolto in faccia e in ogni suo atto un piccolo e velato germe di somiglianza che aveva con l' incantato fratello. «Oh Tonio!» gli disse Renzo , fermandosegli davanti: «sei tu?» Tonio alzò gli occhi , senza mover la testa."
+    demo_out = f"<BOS>Andando , guardava innanzi , ansioso insieme e timoroso di veder qualcheduno; e , dopo pochi passi , vide infatti un uomo in camicia , seduto in terra , con le spalle appoggiate a una siepe di gelsomini , in un' attitudine d' insensato: e , a questa , e poi anche alla fisonomia , gli parve di raffigurar quel povero mezzo scemo di Gervaso ch' era venuto per secondo testimonio alla sciagurata spedizione. <BOS>Ma essendosegli avvicinato , dovette accertarsi ch' era in vece quel Tonio così sveglio che ce l' aveva condotto. <BOS>La peste , togliendogli il vigore del corpo insieme e della mente , gli aveva svolto in faccia e in ogni suo atto un piccolo e velato germe di somiglianza che aveva con l' incantato fratello. <BOS> «Oh Tonio!» gli disse Renzo , fermandosegli davanti: «sei tu?» <BOS>Tonio alzò gli occhi , senza mover la testa."
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": demo_in},
@@ -83,6 +83,20 @@ def _prompt_len(tokenizer, messages: List[Dict[str, str]]) -> int:
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     ids = tokenizer(prompt, add_special_tokens=False).input_ids
     return len(ids)
+
+def clean_text(text):
+    """
+    Cleans the input text by removing double quotes and backslashes.
+    
+    Args:
+        text (str): The input text to be cleaned
+        
+    Returns:
+        str: The cleaned text with all double quotes and backslashes removed
+    """
+    # Remove backslashes and double quotes
+    cleaned_text = text.replace('\\', '').replace('"', '')
+    return cleaned_text
 
 def build_bos_jobs_by_n_sentences(
     pairs: List[Tuple[str, int]],
@@ -121,13 +135,13 @@ def build_bos_jobs_by_n_sentences(
             end_w = prefix[i + k]
             chunk_tokens = words[start_w:end_w]
             text, starts = detok_with_offsets(chunk_tokens)
-            msgs = _one_shot_messages(text)
+            msgs = _one_shot_messages(clean_text(text))
             if _prompt_len(tokenizer, msgs) <= max_prompt:
                 jobs.append({
                     "messages": msgs,
                     "start": start_w,
                     "tokens": chunk_tokens,
-                    "text": text,
+                    "text": clean_text(text),
                     "starts": starts,
                 })
                 break
@@ -145,7 +159,7 @@ def build_bos_jobs_by_n_sentences(
                 last_good_hi = lo + 1
                 while hi <= len(sub):
                     t, _s = detok_with_offsets(sub[lo:hi])
-                    msgs = _one_shot_messages(t)
+                    msgs = _one_shot_messages(clean_text(t))
                     if _prompt_len(tokenizer, msgs) <= max_prompt:
                         last_good_hi = hi
                         hi += 1
@@ -153,10 +167,10 @@ def build_bos_jobs_by_n_sentences(
                         break
                 t, s_off = detok_with_offsets(sub[lo:last_good_hi])
                 jobs.append({
-                    "messages": _one_shot_messages(t),
+                    "messages": _one_shot_messages(clean_text(t)),
                     "start": start_w + lo,
                     "tokens": sub[lo:last_good_hi],
-                    "text": t,
+                    "text": clean_text(t),
                     "starts": s_off,
                 })
                 lo = last_good_hi
@@ -176,6 +190,9 @@ def _clean_equal(a: str, b: str) -> bool:
     norm = lambda s: " ".join(s.split())
     return norm(a) == norm(b)
 
+from rapidfuzz import fuzz
+
+    # Flag as mismatch
 def _map_bos_markers_to_sentence_starts(marked_text: str, orig_text: str, starts: List[int]) -> List[int]:
     """
     Given marked_text (with <BOS> inserted), original text, and token char start offsets,
@@ -183,7 +200,7 @@ def _map_bos_markers_to_sentence_starts(marked_text: str, orig_text: str, starts
     """
     # Remove markers and verify we still match original (strict or loose)
     cleaned = marked_text.replace(SPECIAL_MARKER, "")
-    if cleaned != orig_text and not _clean_equal(cleaned, orig_text):
+    if fuzz.token_sort_ratio(orig_text, cleaned) < 80 or len(orig_text.split()) != len(cleaned.split()):
         return []  # caller will handle fallback
 
     # Find BOS positions in marked_text, map to original text positions
@@ -226,6 +243,44 @@ def _labels_from_sentence_starts(n_tokens: int, sent_starts: List[int]) -> List[
     labels[-1] = 1
     return labels
 
+def _fallback_punct_labels_2(tokens: List[str]) -> List[int]:
+    # Primary sentence-ending punctuations
+    enders = {".", "!", "?", "…"}
+    # Secondary punctuations that sometimes end sentences
+    secondary_enders = {";", ":"}
+    # Common Italian abbreviations that contain periods
+    abbreviations = {"sig", "sig.ra", "dott", "prof", "ing", "arch", "avv", "etc", 
+                     "es", "p.es", "ecc", "art", "n", "pp", "ss", "ca", "c.a", 
+                     "s.a", "s.p.a", "s.r.l", "d", "s", "c", "e", "l", "m", "p", "t"}
+    
+    labels = [0] * len(tokens)
+    
+    for i, t in enumerate(tokens):
+        # Check if token is a primary ending punctuation
+        if t in enders:
+            # Special handling for periods to avoid abbreviations
+            if t == ".":
+                # Check if this is part of an abbreviation
+                if i > 0 and tokens[i-1].lower() in abbreviations:
+                    continue  # Skip if it's part of an abbreviation
+                
+                # Check if next token is lowercase (likely continuation of sentence)
+                if i+1 < len(tokens) and tokens[i+1] and tokens[i+1][0].islower():
+                    continue  # Skip if next word starts with lowercase
+            
+            labels[i] = 1
+        
+        # Check if token is a secondary ending punctuation
+        elif t in secondary_enders:
+            # Only mark as boundary if followed by uppercase or end of sequence
+            if i+1 >= len(tokens) or (tokens[i+1] and tokens[i+1][0].isupper()):
+                labels[i] = 1
+    
+    # Always mark the last token as boundary
+    if labels and labels[-1] == 0:
+        labels[-1] = 1
+    
+    return labels
 
 def _fallback_punct_labels(tokens: List[str]) -> List[int]:
     enders = {".", "!", "?", "…"}
@@ -238,26 +293,29 @@ def _fallback_punct_labels(tokens: List[str]) -> List[int]:
     return labels
 
 from tqdm import tqdm
-
+import warnings
 def run_bos_labeling(
     jobs: List[Dict[str, Any]],
     model,
     tokenizer,
     cfg: BOSConfig,
-) -> List[int]:
+) -> Tuple[List[int], List[int]]:
     """
     Runs the BOS-rewrite prompt per job and stitches labels for the full sequence.
     Later chunks overwrite earlier ones on overlaps (safe since boundaries match).
+
+    Returns:
+        y_pred: List[int] - predicted labels for the full sequence
+        skipped_jobs: List[int] - list of job indices that failed BOS mapping
     """
-    # generation config niceties
     if getattr(model, "generation_config", None) is not None:
         if model.generation_config.pad_token_id is None and tokenizer.eos_token_id is not None:
             model.generation_config.pad_token_id = tokenizer.eos_token_id
 
     preds_full: Dict[int, int] = {}
+    skipped_jobs: List[int] = []
 
-    # Wrap jobs with tqdm for a progress bar
-    for job in tqdm(jobs, desc="BOS labeling", unit="job"):
+    for job_idx, job in enumerate(tqdm(jobs, desc="BOS labeling", unit="job")):
         prompt = tokenizer.apply_chat_template(job["messages"], tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
@@ -270,18 +328,14 @@ def run_bos_labeling(
         gen_ids = out_ids[:, inputs["input_ids"].shape[1]:]
         marked_text = tokenizer.decode(gen_ids[0], skip_special_tokens=True)
 
-        # Map BOS markers to sentence starts
         sent_starts = _map_bos_markers_to_sentence_starts(marked_text, job["text"], job["starts"])
 
         if not sent_starts and cfg.retry_on_mismatch:
-            # Gentle nudge retry
-            nudged = list(job["messages"]) + [{
-                "role": "user",
-                "content": (
-                    f"Reminder: Insert {SPECIAL_MARKER} before EACH sentence. "
-                    "Do not change any other characters. Output only the rewritten text."
-                )
-            }]
+            nudged = list(job["messages"])
+            nudged[-1]["content"] += (
+                f"\nReminder: Insert {SPECIAL_MARKER} before EACH sentence. "
+                "Do not change any other characters or words. Output only the rewritten text."
+            )
             prompt2 = tokenizer.apply_chat_template(nudged, tokenize=False, add_generation_prompt=True)
             inputs2 = tokenizer(prompt2, return_tensors="pt").to(model.device)
             out_ids2 = model.generate(
@@ -295,18 +349,18 @@ def run_bos_labeling(
             sent_starts = _map_bos_markers_to_sentence_starts(marked_text2, job["text"], job["starts"])
 
         if not sent_starts:
-            labels = _fallback_punct_labels(job["tokens"])
+            skipped_jobs.append(job_idx)
+            warnings.warn(f"Skipped BOS labeling for job {job_idx}")
+            continue  # don't label this job
         else:
             labels = _labels_from_sentence_starts(len(job["tokens"]), sent_starts)
 
-        # Fill into global index space
         for i, y in enumerate(labels):
             preds_full[job["start"] + i] = y
 
-    # Stitch back in order
     max_idx = max(preds_full.keys()) if preds_full else -1
     y_pred = [preds_full.get(i, 0) for i in range(max_idx + 1)]
-    return y_pred
+    return y_pred, skipped_jobs
 
 
 
