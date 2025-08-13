@@ -235,6 +235,7 @@ def _fallback_punct_labels(tokens: List[str]) -> List[int]:
         labels[-1] = 1
     return labels
 
+from tqdm import tqdm
 
 def run_bos_labeling(
     jobs: List[Dict[str, Any]],
@@ -253,7 +254,8 @@ def run_bos_labeling(
 
     preds_full: Dict[int, int] = {}
 
-    for job in jobs:
+    # Wrap jobs with tqdm for a progress bar
+    for job in tqdm(jobs, desc="BOS labeling", unit="job"):
         prompt = tokenizer.apply_chat_template(job["messages"], tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
@@ -270,7 +272,7 @@ def run_bos_labeling(
         sent_starts = _map_bos_markers_to_sentence_starts(marked_text, job["text"], job["starts"])
 
         if not sent_starts and cfg.retry_on_mismatch:
-            # Gentle nudge retry: append a clarifying user turn
+            # Gentle nudge retry
             nudged = list(job["messages"]) + [{
                 "role": "user",
                 "content": (
@@ -283,8 +285,7 @@ def run_bos_labeling(
             out_ids2 = model.generate(
                 **inputs2,
                 max_new_tokens=cfg.max_new_tokens,
-                do_sample=(cfg.temperature > 0),
-                temperature=cfg.temperature,
+                do_sample=False,
                 top_p=cfg.top_p,
             )
             gen_ids2 = out_ids2[:, inputs2["input_ids"].shape[1]:]
@@ -300,10 +301,11 @@ def run_bos_labeling(
         for i, y in enumerate(labels):
             preds_full[job["start"] + i] = y
 
-    # Stitch back in order; default to 0 if any holes (shouldn't happen)
+    # Stitch back in order
     max_idx = max(preds_full.keys()) if preds_full else -1
     y_pred = [preds_full.get(i, 0) for i in range(max_idx + 1)]
     return y_pred
+
 
 
 # =========================
