@@ -325,3 +325,106 @@ def evaluate_generative_boundary_model(
         "f1": f1,
         "counts": {"TP": TP, "FP": FP, "FN": FN, "TN": TN, "total": total},
     }
+
+# --- Add to evaluation.py ---
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from typing import Dict, Tuple, Any
+
+def _softmax_np(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    x = x - np.max(x, axis=axis, keepdims=True)
+    e = np.exp(x)
+    return e / np.sum(e, axis=axis, keepdims=True)
+
+def collect_token_predictions(
+    trainer,
+    dataset,
+    word_only: bool = True,
+    include_special: bool = True,
+) -> pd.DataFrame:
+    """
+    Runs trainer.predict(dataset) and returns a DataFrame with one row per token
+    (or per *word* position if word_only=True, i.e., labels != -100).
+
+    Columns:
+      sample_idx, token_idx, word_idx, token_id, token, is_special, is_word_start,
+      label, pred, prob_0, prob_1
+    """
+    pred_out = trainer.predict(dataset)
+    logits = pred_out.predictions            # [N, L, 2]
+    labels = pred_out.label_ids              # [N, L]
+    tok = trainer.tokenizer
+
+    rows = []
+    N = len(dataset)
+    for i in range(N):
+        ids = np.array(dataset[i]["input_ids"])
+        toks = tok.convert_ids_to_tokens(ids, skip_special_tokens=False)
+        labs = np.array(labels[i])          # may contain -100
+        probs = _softmax_np(np.array(logits[i]), axis=-1)   # [L,2]
+        preds = probs.argmax(-1)                               # [L]
+
+        # word start mask (first sub-token of each word)
+        mask_word_start = (labs != -100)
+
+        word_idx = -1
+        for j in range(len(ids)):
+            is_word_start = bool(mask_word_start[j])
+            if word_only and not is_word_start:
+                continue
+            if is_word_start:
+                word_idx += 1
+
+            is_special = toks[j] in getattr(tok, "all_special_tokens", [])
+            if not include_special and is_special:
+                continue
+
+            label_val = int(labs[j]) if labs[j] != -100 else -100
+            rows.append({
+                "sample_idx": i,
+                "token_idx": j,
+                "word_idx": (word_idx if is_word_start else None),
+                "token_id": int(ids[j]),
+                "token": toks[j],
+                "is_special": bool(is_special),
+                "is_word_start": is_word_start,
+                "label": label_val,              # 0/1 or -100
+                "pred": int(preds[j]),           # 0/1
+                "prob_0": float(probs[j, 0]),
+                "prob_1": float(probs[j, 1]),
+            })
+
+    df = pd.DataFrame(rows)
+    return df
+
+def save_token_predictions(
+    trainer,
+    dataset,
+    out_path: str | Path,
+    word_only: bool = True,
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Collects predictions and saves them to CSV or Parquet based on suffix.
+    Returns (path, summary dict).
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    df = collect_token_predictions(trainer, dataset, word_only=word_only)
+
+    if out_path.suffix.lower() == ".parquet":
+        # requires pyarrow or fastparquet; use CSV if you prefer no extra deps
+        df.to_parquet(out_path, index=False)
+    elif out_path.suffix.lower() == ".jsonl":
+        df.to_json(out_path, orient="records", lines=True, force_ascii=False)
+    else:
+        df.to_csv(out_path, index=False)
+
+    summary = {
+        "n_samples": len(dataset),
+        "n_rows": len(df),
+        "word_only": word_only,
+        "path": str(out_path),
+    }
+    return str(out_path), summary
