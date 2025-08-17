@@ -74,6 +74,8 @@ class BOSConfig:
     token_budget: int = 60000      # prompt-side token cap (for safety)
     safety_margin: int = 2048      # leave room
     retry_on_mismatch: bool = True
+    batch_size: int = 8
+    
 
 # =========================
 # Chunking by N sentences
@@ -193,13 +195,18 @@ def _clean_equal(a: str, b: str) -> bool:
 from rapidfuzz import fuzz
 
     # Flag as mismatch
-def _map_bos_markers_to_sentence_starts(marked_text: str, orig_text: str, starts: List[int]) -> List[int]:
+def _map_bos_markers_to_sentence_starts(marked_text: str, orig_text: str, starts: List[int], model_id) -> List[int]:
     """
     Given marked_text (with <BOS> inserted), original text, and token char start offsets,
     return a list of token indices that begin sentences (0 included if first sentence marked).
     """
     # Remove markers and verify we still match original (strict or loose)
     cleaned = marked_text.replace(SPECIAL_MARKER, "")
+    # print("\n\n_map_bos_markers_to_sentence_starts\n\n", cleaned, "\n\n")
+    if model_id == "openai/gpt-oss-20b":
+        cleaned = extract_gpt_answer(cleaned)
+        
+    # print("\n\n_map_bos_markers_to_sentence_starts\n\n", cleaned, "\n\n")
     if fuzz.token_sort_ratio(orig_text, cleaned) < 80 or len(orig_text.split()) != len(cleaned.split()):
         return []  # caller will handle fallback
 
@@ -292,75 +299,125 @@ def _fallback_punct_labels(tokens: List[str]) -> List[int]:
         labels[-1] = 1
     return labels
 
+from typing import Any, Dict, List, Tuple
 from tqdm import tqdm
 import warnings
+import torch
+
+from typing import Any, Dict, List, Tuple
+from tqdm import tqdm
+import warnings
+import torch
+
+def extract_gpt_answer(output):
+    marker = "assistantfinal"
+    if marker in output:
+        after = output.split(marker, 1)[1]
+        return after
+    else:
+        print("Marker not found.")
+
 def run_bos_labeling(
     jobs: List[Dict[str, Any]],
     model,
     tokenizer,
-    cfg: BOSConfig,
+    cfg,
+    model_id=None
 ) -> Tuple[List[int], List[int]]:
     """
-    Runs the BOS-rewrite prompt per job and stitches labels for the full sequence.
-    Later chunks overwrite earlier ones on overlaps (safe since boundaries match).
+    Batched BOS labeling with logging for skipped-after-retry sentences.
 
     Returns:
         y_pred: List[int] - predicted labels for the full sequence
-        skipped_jobs: List[int] - list of job indices that failed BOS mapping
+        skipped_jobs: List[int] - indices of jobs that failed even after retry
     """
+    model.eval()
     if getattr(model, "generation_config", None) is not None:
         if model.generation_config.pad_token_id is None and tokenizer.eos_token_id is not None:
             model.generation_config.pad_token_id = tokenizer.eos_token_id
 
-    preds_full: Dict[int, int] = {}
-    skipped_jobs: List[int] = []
+    device = getattr(model, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    batch_size = getattr(cfg, "batch_size", 8)
 
-    for job_idx, job in enumerate(tqdm(jobs, desc="BOS labeling", unit="job")):
-        prompt = tokenizer.apply_chat_template(job["messages"], tokenize=False, add_generation_prompt=True)
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-        out_ids = model.generate(
-            **inputs,
-            max_new_tokens=cfg.max_new_tokens,
-            do_sample=False,
-            top_p=cfg.top_p,
-        )
-        gen_ids = out_ids[:, inputs["input_ids"].shape[1]:]
-        marked_text = tokenizer.decode(gen_ids[0], skip_special_tokens=True)
-
-        sent_starts = _map_bos_markers_to_sentence_starts(marked_text, job["text"], job["starts"])
-
-        if not sent_starts and cfg.retry_on_mismatch:
-            nudged = list(job["messages"])
-            nudged[-1]["content"] += (
+    prompts, nudged_prompts = [], []
+    for job in jobs:
+        base_p = tokenizer.apply_chat_template(job["messages"], tokenize=False, add_generation_prompt=True)
+        prompts.append(base_p)
+        if getattr(cfg, "retry_on_mismatch", False):
+            nudged_msgs = list(job["messages"])
+            nudged_msgs[-1]["content"] += (
                 f"\nReminder: Insert {SPECIAL_MARKER} before EACH sentence. "
                 "Do not change any other characters or words. Output only the rewritten text."
             )
-            prompt2 = tokenizer.apply_chat_template(nudged, tokenize=False, add_generation_prompt=True)
-            inputs2 = tokenizer(prompt2, return_tensors="pt").to(model.device)
-            out_ids2 = model.generate(
-                **inputs2,
+            nudged_prompts.append(
+                tokenizer.apply_chat_template(nudged_msgs, tokenize=False, add_generation_prompt=True)
+            )
+        else:
+            nudged_prompts.append(base_p)
+
+    def _generate_batched(ids: List[int], retry: bool) -> List[str]:
+        sel = [nudged_prompts[i] if retry else prompts[i] for i in ids]
+        inputs = tokenizer(sel, return_tensors="pt", padding=True).to(device)
+        with torch.inference_mode():
+            out_ids = model.generate(
+                **inputs,
                 max_new_tokens=cfg.max_new_tokens,
                 do_sample=False,
-                top_p=cfg.top_p,
+                use_cache=True,
             )
-            gen_ids2 = out_ids2[:, inputs2["input_ids"].shape[1]:]
-            marked_text2 = tokenizer.decode(gen_ids2[0], skip_special_tokens=True)
-            sent_starts = _map_bos_markers_to_sentence_starts(marked_text2, job["text"], job["starts"])
+        gen = out_ids[:, inputs["input_ids"].shape[1]:]
+        return tokenizer.batch_decode(gen, skip_special_tokens=True)
 
-        if not sent_starts:
-            skipped_jobs.append(job_idx)
-            warnings.warn(f"Skipped BOS labeling for job {job_idx}")
-            continue  # don't label this job
-        else:
-            labels = _labels_from_sentence_starts(len(job["tokens"]), sent_starts)
+    preds_full, skipped_jobs, needs_retry = {}, [], []
+    skipped_texts_after_retry: List[str] = {}
 
-        for i, y in enumerate(labels):
-            preds_full[job["start"] + i] = y
+    # First pass
+    for st in tqdm(range(0, len(jobs), batch_size), desc="BOS labeling (pass 1)", unit="batch"):
+        batch = list(range(st, min(st + batch_size, len(jobs))))
+        outs = _generate_batched(batch, retry=False)
+        for idx_local, job_idx in enumerate(batch):
+            job = jobs[job_idx]
+            marked = outs[idx_local]
+            starts = _map_bos_markers_to_sentence_starts(marked, job["text"], job["starts"], model_id)
+            if not starts and getattr(cfg, "retry_on_mismatch", False):
+                needs_retry.append(job_idx)
+            elif not starts:
+                skipped_jobs.append(job_idx)
+                warnings.warn(f"Skipped BOS labeling for job {job_idx}")
+            else:
+                labels = _labels_from_sentence_starts(len(job["tokens"]), starts)
+                for i, y in enumerate(labels):
+                    preds_full[job["start"] + i] = y
+
+    # Retry pass
+    if needs_retry:
+        for st in tqdm(range(0, len(needs_retry), batch_size), desc="BOS labeling (retry)", unit="batch"):
+            batch = needs_retry[st: st + batch_size]
+            outs = _generate_batched(batch, retry=True)
+            for idx_local, job_idx in enumerate(batch):
+                job = jobs[job_idx]
+                marked = outs[idx_local]
+                starts = _map_bos_markers_to_sentence_starts(marked, job["text"], job["starts"], model_id)
+                if not starts:
+                    skipped_jobs.append(job_idx)
+                    skipped_texts_after_retry[job_idx] = marked
+                    warnings.warn(f"Skipped BOS labeling for job {job_idx} (after retry)")
+                else:
+                    labels = _labels_from_sentence_starts(len(job["tokens"]), starts)
+                    for i, y in enumerate(labels):
+                        preds_full[job["start"] + i] = y
+
+    # Log the skipped-after-retry cases
+    if skipped_texts_after_retry:
+        print("\n--- Skipped-after-retry sentences detail ---")
+        for job_idx, text in skipped_texts_after_retry.items():
+            print(f"[Job GOLD{job_idx}]:\n{jobs[job_idx]["text"]}\n")
+            print(f"[Job PREDICTION{job_idx}]:\n{text}\n")
 
     max_idx = max(preds_full.keys()) if preds_full else -1
     y_pred = [preds_full.get(i, 0) for i in range(max_idx + 1)]
     return y_pred, skipped_jobs
+
 
 
 

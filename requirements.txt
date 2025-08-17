@@ -10,7 +10,6 @@ tokenizers>=0.15.2
 huggingface_hub>=0.23.0
 safetensors>=0.4.2
 protobuf
-flash-attn
 
 # --- Efficient fine-tuning / inference for small LLMs ---
 accelerate>=0.31.0
