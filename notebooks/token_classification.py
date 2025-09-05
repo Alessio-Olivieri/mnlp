@@ -16,7 +16,7 @@ train = False
 
 # %%
 TRAIN_DATA = paths.data/"manzoni_train_tokens.csv"
-OOD_DATA = paths.data/"manzoni_dev_tokens.csv"
+dev_DATA = paths.data/"manzoni_dev_tokens.csv"
 HF_DATA = paths.data/"prepared"
 torch.set_float32_matmul_precision("high")   # enable TF32 matmuls on Ampere
 torch.backends.cudnn.allow_tf32 = True 
@@ -157,36 +157,36 @@ evaluation.preview_pred_vs_gold(best_trainer, val_ds, results)
 
 
 # %%
-# OOD
-ood_results = {}
+# dev
+dev_results = {}
 importlib.reload(dataset)
 
-# -- OOD evaluation loop:
-ood_results = {}
+# -- dev evaluation loop:
+dev_results = {}
 for model_key in ["deberta", "modernbert", "bert"]:
     model_dir = paths.chekpoints / model_key
-    trainer = evaluation.load_trainer_for_eval(model_dir, HF_DATA / model_key / "ood")
-    pred = trainer.predict(trainer.eval_dataset)  # use their own OOD eval set
+    trainer = evaluation.load_trainer_for_eval(model_dir, HF_DATA / model_key / "dev")
+    pred = trainer.predict(trainer.eval_dataset)  # use their own dev eval set
     logits = pred.predictions
     labels = pred.label_ids
 
     metrics = evaluation.compute_prf(logits, labels)
-    ood_results[model_key] = metrics
-    print(f"{model_key} OOD Results:", metrics)
+    dev_results[model_key] = metrics
+    print(f"{model_key} dev Results:", metrics)
 
 # %%
-pd.DataFrame(ood_results).T.sort_values("f1", ascending=False)
+pd.DataFrame(dev_results).T.sort_values("f1", ascending=False)
 
 # %%
-best_key = max(ood_results, key=lambda k: ood_results[k]["f1"])
+best_key = max(dev_results, key=lambda k: dev_results[k]["f1"])
 model_dir = paths.chekpoints/best_key
 
-ood_best_trainer = evaluation.load_trainer_for_eval(model_dir, HF_DATA / best_key / "ood")
-ood_ds = load_from_disk(HF_DATA/best_key/"val")
-results = error_examples(ood_best_trainer, ood_ds, max_show=5)
+dev_best_trainer = evaluation.load_trainer_for_eval(model_dir, HF_DATA / best_key / "dev")
+dev_ds = load_from_disk(HF_DATA/best_key/"val")
+results = error_examples(dev_best_trainer, dev_ds, max_show=5)
 
-evaluation.preview_predictions(ood_best_trainer, ood_ds, k=3)
-evaluation.preview_full_sentences(ood_best_trainer, ood_ds, n_examples=2)
-evaluation.preview_pred_vs_gold(ood_best_trainer, ood_ds, results)
+evaluation.preview_predictions(dev_best_trainer, dev_ds, k=3)
+evaluation.preview_full_sentences(dev_best_trainer, dev_ds, n_examples=2)
+evaluation.preview_pred_vs_gold(dev_best_trainer, dev_ds, results)
 
 
