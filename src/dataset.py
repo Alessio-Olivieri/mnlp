@@ -38,37 +38,6 @@ def read_token_label_file(path: str | Path) -> List[Tuple[str, int]]:
     return pairs
 
 
-def detok(tokens: List[str]) -> str:
-    """
-    Simple, language-agnostic detokenizer:
-      - No space before closing punctuation: . , ; : ! ? ) ] } % ” » …
-      - No space after opening quotes/brackets: ( [ { “ «
-      - No space before apostrophe-like tokens: ' ’ (handles Italian l' acqua -> l'acqua)
-      - Collapse spaces.
-    """
-    no_space_before = set(list(".,;:!?)]}%") + ["”", "»", "…", "”", "’", "”"])
-    no_space_after_open = set(list("([{") + ["“", "«"])
-    pieces = []
-    for i, tok in enumerate(tokens):
-        if i == 0:
-            pieces.append(tok)
-            continue
-
-        prev = pieces[-1] if pieces else ""
-        # if token is closing punctuation, attach to previous
-        if tok in no_space_before:
-            pieces[-1] = prev + tok
-        # attach apostrophe-like tokens to previous (e.g., l' + acqua)
-        elif tok in {"'", "’"}:
-            pieces[-1] = prev + tok
-        # attach if previous token is an opening quote/bracket
-        elif prev and prev[-1] in no_space_after_open:
-            pieces[-1] = prev + tok
-        else:
-            pieces.append(" " + tok)
-    return "".join(pieces).strip()
-
-
 def group_into_sentences(pairs: List[Tuple[str, int]]) -> Tuple[List[List[str]], List[List[int]]]:
     """
     Split flat (token,label) pairs into sentence-level lists.
@@ -185,23 +154,6 @@ def tidy(ds, model_key):
     if "token_type_ids" in cols and "token_type_ids" not in tok.model_input_names:
         drop.append("token_type_ids")
     return ds.remove_columns(drop) if drop else ds
-
-from transformers import BatchEncoding
-
-def predict_logits(trainer, ds):
-    out = trainer.predict(ds)
-    return out.predictions, out.label_ids
-
-def boundaries_from_logits(logits, labels):
-    preds = logits.argmax(-1)
-    mask = labels != -100
-    y_true = labels[mask].ravel()     # 0/1 at first-subword positions
-    y_pred = preds[mask].ravel()
-    return y_true, y_pred
-
-def detok_ids_to_words(tokenizer, input_ids):
-    # Decode without special tokens; for a quick glance only
-    return tokenizer.convert_ids_to_tokens(input_ids, skip_special_tokens=True)
 
 def sentences_from_word_seq(words, y_pred):
     sents, cur = [], []

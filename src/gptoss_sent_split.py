@@ -10,8 +10,6 @@ from dataset import read_token_label_file, group_into_sentences, sentences_from_
 
 def detok_with_offsets(tokens: List[str]) -> Tuple[str, List[int]]:
     """
-    Same logic as your detok(), but also returns char start offsets for each token
-    in the produced string. Offsets allow us to align <BOS> insertions back to tokens.
     """
     no_space_before = set(list(".,;:!?)]}%") + ["”", "»", "…", "”", "’", "”"])
     no_space_after_open = set(list("([{") + ["“", "«"])
@@ -187,10 +185,6 @@ def build_bos_jobs_by_n_sentences(
 # Generation + BOS -> labels
 # =========================
 
-def _clean_equal(a: str, b: str) -> bool:
-    """Looser equality that collapses whitespace."""
-    norm = lambda s: " ".join(s.split())
-    return norm(a) == norm(b)
 
 from rapidfuzz import fuzz
 
@@ -248,45 +242,6 @@ def _labels_from_sentence_starts(n_tokens: int, sent_starts: List[int]) -> List[
             labels[s - 1] = 1
     # Always close the last sentence in the chunk
     labels[-1] = 1
-    return labels
-
-def _fallback_punct_labels_2(tokens: List[str]) -> List[int]:
-    # Primary sentence-ending punctuations
-    enders = {".", "!", "?", "…"}
-    # Secondary punctuations that sometimes end sentences
-    secondary_enders = {";", ":"}
-    # Common Italian abbreviations that contain periods
-    abbreviations = {"sig", "sig.ra", "dott", "prof", "ing", "arch", "avv", "etc", 
-                     "es", "p.es", "ecc", "art", "n", "pp", "ss", "ca", "c.a", 
-                     "s.a", "s.p.a", "s.r.l", "d", "s", "c", "e", "l", "m", "p", "t"}
-    
-    labels = [0] * len(tokens)
-    
-    for i, t in enumerate(tokens):
-        # Check if token is a primary ending punctuation
-        if t in enders:
-            # Special handling for periods to avoid abbreviations
-            if t == ".":
-                # Check if this is part of an abbreviation
-                if i > 0 and tokens[i-1].lower() in abbreviations:
-                    continue  # Skip if it's part of an abbreviation
-                
-                # Check if next token is lowercase (likely continuation of sentence)
-                if i+1 < len(tokens) and tokens[i+1] and tokens[i+1][0].islower():
-                    continue  # Skip if next word starts with lowercase
-            
-            labels[i] = 1
-        
-        # Check if token is a secondary ending punctuation
-        elif t in secondary_enders:
-            # Only mark as boundary if followed by uppercase or end of sequence
-            if i+1 >= len(tokens) or (tokens[i+1] and tokens[i+1][0].isupper()):
-                labels[i] = 1
-    
-    # Always mark the last token as boundary
-    if labels and labels[-1] == 0:
-        labels[-1] = 1
-    
     return labels
 
 def _fallback_punct_labels(tokens: List[str]) -> List[int]:
@@ -417,35 +372,3 @@ def run_bos_labeling(
     max_idx = max(preds_full.keys()) if preds_full else -1
     y_pred = [preds_full.get(i, 0) for i in range(max_idx + 1)]
     return y_pred, skipped_jobs
-
-
-
-
-# =========================
-# Public API
-# =========================
-
-def predict_boundaries_with_bos(
-    csv_path: str | Path,
-    model,
-    tokenizer,
-    cfg: BOSConfig = BOSConfig(),
-) -> Dict[str, Any]:
-    pairs = read_token_label_file(csv_path)
-    jobs = build_bos_jobs_by_n_sentences(pairs, tokenizer, cfg)
-    y_pred = run_bos_labeling(jobs, model, tokenizer, cfg)
-
-    tokens = [t for (t, _) in pairs]
-    gold = [y for (_, y) in pairs]
-
-    # Align lengths, just in case
-    n = min(len(tokens), len(y_pred))
-    tokens, gold, y_pred = tokens[:n], gold[:n], y_pred[:n]
-    sents = sentences_from_word_seq(tokens, y_pred)
-
-    return {
-        "tokens": tokens,
-        "gold": gold,
-        "pred": y_pred,
-        "sentences": sents,
-    }
