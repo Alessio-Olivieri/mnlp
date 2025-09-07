@@ -190,7 +190,6 @@ def compute_prf(logits: np.ndarray, labels: np.ndarray):
     return {"precision": float(prec), "recall": float(rec), "f1": float(f1), "accuracy": float(acc)}
 
 
-# --- Add to evaluation.py ---
 from pathlib import Path
 import numpy as np
 import pandas as pd

@@ -73,11 +73,6 @@ class BOSConfig:
     safety_margin: int = 2048      # leave room
     retry_on_mismatch: bool = True
     batch_size: int = 8
-    
-
-# =========================
-# Chunking by N sentences
-# =========================
 
 def _prompt_len(tokenizer, messages: List[Dict[str, str]]) -> int:
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -180,10 +175,6 @@ def build_bos_jobs_by_n_sentences(
 
     return jobs
 
-
-# =========================
-# Generation + BOS -> labels
-# =========================
 
 
 from rapidfuzz import fuzz

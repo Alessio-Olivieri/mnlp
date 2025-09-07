@@ -22,7 +22,6 @@ import dataset
 import utils
 
 
-# cell 2
 def compute_metrics_boundary(eval_pred):
     """
     Computes precision/recall/F1 for the positive class (boundary=1),
@@ -53,7 +52,6 @@ def free_after_trainer(trainer, model=None, tokenizer=None, train_ds=None, val_d
     torch.cuda.empty_cache()   # returns blocks to the allocator
     torch.cuda.ipc_collect() 
 
-# cell 4
 def make_trainer(
     model_key: str,
     train_ds: hfds.Dataset,
